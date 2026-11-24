@@ -38,13 +38,22 @@ class FakeHttp:
         self.channel = {"guild_id": GUILD, "type": 0}
         self.fail = None
         self.timeout_after_post = False
+        self.edits = []
+        self.fail_edit = None
 
-    def json(self, url, authorization, body=None):
+    def json(self, url, authorization, body=None, method=None):
         self.calls.append((url, authorization, copy.deepcopy(body)))
         if url.endswith("/me"):
             if self.fail == "identity": raise UpstreamError(401)
             return self.user
         if "/members/" in url: return self.member
+        if method == "PATCH":
+            self.edits.append((url, copy.deepcopy(body)))
+            if self.fail_edit:
+                status = self.fail_edit
+                self.fail_edit = None
+                raise UpstreamError(status)
+            return {"id": url.rsplit("/", 1)[1]}
         if url.endswith("/messages"):
             if self.fail == "429": raise UpstreamError(429, 20)
             if self.fail == "403": raise UpstreamError(403)
@@ -76,7 +85,7 @@ class Announcements(unittest.TestCase):
         url, auth, body = self.http.calls[-1]
         self.assertEqual(url, f"https://discord.com/api/v10/channels/{CHANNEL}/messages")
         self.assertEqual(auth, "Bot " + BOT)
-        self.assertEqual(body["content"], f"New match started by <@{HOST}>.\nLobby code: `ABC123`")
+        self.assertEqual(body["content"], f"Lobby opened by <@{HOST}>.\nLobby code: `ABC123`")
         self.assertEqual(body["allowed_mentions"], {"parse": []})
         self.assertTrue(body["enforce_nonce"])
         self.assertNotIn(TOKEN, json.dumps(self.repo.state))
@@ -216,6 +225,101 @@ class Announcements(unittest.TestCase):
         self.now += 16
         self.assertEqual(self.send()["status"], "sent")
         self.assertEqual(len(self.http.messages), 1)
+
+    def close(self, code="ABC123", request="c" * 32):
+        return self.service.announce("Bearer " + TOKEN, {"code": code, "requestId": request, "action": "close"})
+
+    def test_close_edits_the_original_message_without_another_post(self):
+        opened = self.send(name="Friday **games**")
+        self.assertEqual(self.close()["lobbyStatus"], "closed")
+        self.assertEqual(len(self.http.messages), 1)
+        url, body = self.http.edits[0]
+        self.assertEqual(url, f"https://discord.com/api/v10/channels/{CHANNEL}/messages/{opened['messageId']}")
+        self.assertEqual(body["content"], f"Lobby closed by <@{HOST}>.\nLobby: Friday \\*\\*games\\*\\*\nLobby code: `ABC123`")
+        self.assertEqual(body["allowed_mentions"], {"parse": []})
+        self.assertEqual(self.close()["status"], "closed")
+        self.assertEqual(len(self.http.edits), 1)
+
+    def test_close_does_not_require_opening_cooldown_or_daily_capacity(self):
+        self.service.config = replace(CONFIG, daily_limit=1)
+        self.send()
+        self.close()
+        self.assertEqual(next(iter(self.repo.state.values()))["daily"], 1)
+
+    def test_close_requires_the_same_verified_host_and_destination(self):
+        self.send()
+        self.http.user["discordId"] = "623456789012345678"
+        self.http.member["user"]["id"] = self.http.user["discordId"]
+        self.problem(403, self.close)
+        self.service.config = replace(CONFIG, allowed_hosts=frozenset({self.http.user['discordId']}))
+        self.problem(404, self.close)
+        self.assertFalse(self.http.edits)
+
+    def test_close_does_not_create_a_missing_or_unconfirmed_lobby(self):
+        self.problem(404, self.close)
+        self.http.timeout_after_post = True
+        self.problem(503, self.send)
+        self.now += 16
+        self.problem(409, self.close)
+        self.assertFalse(self.http.edits)
+
+    def test_reopen_uses_a_new_post_and_old_close_retries_cannot_close_it(self):
+        self.send(); self.close(); self.close(request="d" * 32)
+        self.now += 61
+        self.assertEqual(self.send(request="b" * 32)["lobbyStatus"], "open")
+        self.assertEqual(len(self.http.messages), 2)
+        for request in ["c" * 32, "d" * 32]:
+            self.assertEqual(self.close(request=request)["lobbyStatus"], "closed")
+        self.assertEqual(len(self.http.edits), 1)
+        self.assertEqual(self.send(request="a" * 32)["lobbyStatus"], "closed")
+        self.assertEqual(self.send(request="b" * 32)["lobbyStatus"], "open")
+
+    def test_open_and_close_request_ids_cannot_be_reused_for_other_actions(self):
+        self.send(); self.close()
+        self.problem(409, lambda: self.close(request="a" * 32))
+        self.problem(409, lambda: self.send(request="c" * 32))
+        self.problem(409, lambda: self.close(code="OTHER1"))
+
+    def test_close_failure_can_retry_the_same_patch(self):
+        self.send(); self.http.fail_edit = 0
+        # Zero represents a transport failure, so use a separate wrapper.
+        real = self.http.json
+        once = True
+        def timeout(url, auth, body=None, method=None):
+            nonlocal once
+            result = real(url, auth, body, method)
+            if method == "PATCH" and once:
+                once = False
+                raise UpstreamError()
+            return result
+        self.http.json = timeout
+        self.problem(503, self.close)
+        self.close()
+        self.assertEqual(self.http.edits[0], self.http.edits[1])
+        self.assertEqual(len(self.http.messages), 1)
+
+    def test_deleted_message_is_already_closed(self):
+        self.send(); self.http.fail_edit = 404
+        self.assertEqual(self.close()["status"], "closed")
+
+    def test_close_completion_failure_is_safely_retryable(self):
+        self.send()
+        real = self.repo.edit
+        count = 0
+        def fail_once(host, callback):
+            nonlocal count
+            count += 1
+            if count == 2: raise RuntimeError("injected database failure")
+            return real(host, callback)
+        self.repo.edit = fail_once
+        with self.assertRaises(RuntimeError): self.close()
+        self.now += 16
+        self.assertEqual(self.close()["status"], "closed")
+        self.assertEqual(len(self.http.messages), 1)
+
+    def test_invalid_action_is_rejected_before_discord(self):
+        self.problem(400, lambda: self.service.announce("Bearer " + TOKEN, {"code": "ABC123", "requestId": "a" * 32, "action": "delete"}))
+        self.assertFalse(self.http.calls)
 
 
 class EntryPoint(unittest.TestCase):

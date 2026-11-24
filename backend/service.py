@@ -58,12 +58,12 @@ class Http:
     def __init__(self):
         self.opener = urllib.request.build_opener(NoRedirect)
 
-    def json(self, url, authorization, body=None):
+    def json(self, url, authorization, body=None, method=None):
         headers = {"Authorization": authorization, "User-Agent": "DiscordBot (https://github.com/SGLifers/SGL-Discord-Bot, 1.0)"}
         data = None if body is None else json.dumps(body).encode()
         if data is not None:
             headers["Content-Type"] = "application/json"
-        request = urllib.request.Request(url, data=data, headers=headers)
+        request = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
             with self.opener.open(request, timeout=5) as response:
                 raw = response.read(65537)
@@ -94,7 +94,9 @@ class Announcer:
         self.config.validate()
         require(self.config.enabled, 503, "Announcements are disabled.")
         require(isinstance(authorization, str) and re.fullmatch(r"Bearer [A-Za-z0-9_-]{32,512}", authorization), 401, "Sign in with Discord.")
-        require(isinstance(body, dict) and {"code", "requestId"} <= set(body) <= {"code", "requestId", "lobbyName"}, 400, "Expected a lobby code, optional name and request identity.")
+        require(isinstance(body, dict) and {"code", "requestId"} <= set(body) <= {"code", "requestId", "lobbyName", "action"}, 400, "Expected a lobby code, optional name, action and request identity.")
+        action = body.get("action", "open")
+        require(action in ("open", "close"), 400, "Choose open or close.")
         code, request_id = body["code"], body["requestId"]
         require(isinstance(code, str) and re.fullmatch(r"[A-Z0-9]{6}", code), 400, "Lobby codes must contain six letters or numbers.")
         lobby_name = body.get("lobbyName", "")
@@ -122,15 +124,20 @@ class Announcer:
             raise Problem(403 if error.status == 404 else 503, "Server membership or bot configuration could not be verified.", error.retry_after) from None
         now = self.now()
         subject = f"{self.config.guild}:{self.config.channel}:{host}"
+        if action == "close":
+            return self.close(subject, host, bot_auth, code, request_id, now)
 
         def claim(state):
             entries = {k: v for k, v in state.get("entries", {}).items() if v["created"] > now - 86400}
+            require(not any(request_id in v.get("closeRequestIds", []) for v in entries.values()), 409, "Request identity was used to close a lobby.")
             same = entries.get(request_id)
             require(same is None or same["code"] == code and same.get("lobbyName", "") == lobby_name, 409, "Request identity was used for another announcement.")
-            canonical = request_id if same else next((k for k, v in entries.items() if v["code"] == code), request_id)
+            canonical = request_id if same else next((k for k, v in entries.items() if v["code"] == code and not v.get("closed")), request_id)
             previous = entries.get(canonical)
             if previous and previous["status"] == "sent":
-                return {"status": "duplicate", "messageId": previous["messageId"]}
+                if previous.get("closing"):
+                    raise Problem(429, "This lobby is being closed. Retry Close Lobby.", 15)
+                return {"status": "duplicate", "messageId": previous["messageId"], "lobbyStatus": "closed" if previous.get("closed") else "open"}
             if previous and previous["status"] == "pending":
                 require(now - previous["attempted"] < 120 and previous["attempts"] < 3, 409, "Delivery is uncertain. Check the Discord channel before retrying.")
             if state.get("lockUntil", 0) > now:
@@ -157,7 +164,7 @@ class Announcer:
         # A pending retry keeps its original name, just as it keeps its nonce.
         title = re.sub(r"([\\`*_~|<>\[\]])", r"\\\1", result["lobbyName"])
         name_line = f"Lobby: {title}\n" if title else ""
-        message = {"content": f"New match started by <@{host}>.\n{name_line}Lobby code: `{code}`", "allowed_mentions": {"parse": []}, "nonce": nonce, "enforce_nonce": True}
+        message = {"content": f"Lobby opened by <@{host}>.\n{name_line}Lobby code: `{code}`", "allowed_mentions": {"parse": []}, "nonce": nonce, "enforce_nonce": True}
         try:
             posted = self.http.json(f"https://discord.com/api/v10/channels/{self.config.channel}/messages", bot_auth, message)
             require(snowflake(posted.get("id")), 503, "Discord did not confirm delivery.")
@@ -180,5 +187,58 @@ class Announcer:
         def complete(state):
             state["entries"][canonical].update(status="sent", messageId=posted["id"])
             state["lockUntil"] = 0
-            return {"status": "sent", "messageId": posted["id"]}
+            return {"status": "sent", "messageId": posted["id"], "lobbyStatus": "open"}
+        return self.repo.edit(subject, complete)
+
+    def close(self, subject, host, bot_auth, code, request_id, now):
+        def claim(state):
+            entries = {k: v for k, v in state.get("entries", {}).items() if v["created"] > now - 86400}
+            require(request_id not in entries, 409, "Request identity was used to open a lobby.")
+            # Bind close retries to the original lobby, including after the same
+            # code is reopened. An old retry must never close a newer lobby.
+            canonical = next((k for k, v in entries.items() if request_id in v.get("closeRequestIds", [])), None)
+            if canonical:
+                require(entries[canonical]["code"] == code, 409, "Request identity was used for another lobby.")
+            else:
+                matches = [(k, v) for k, v in entries.items() if v["code"] == code]
+                canonical = max(matches, key=lambda pair: (pair[1]["created"], pair[0]))[0] if matches else None
+            require(canonical is not None, 404, "No recent announcement for this lobby was found for your account.")
+            entry = entries[canonical]
+            require(entry["status"] == "sent", 409, "Confirm the open request before closing this lobby.")
+            identities = entry.setdefault("closeRequestIds", [])
+            if request_id not in identities:
+                require(len(identities) < 64, 429, "Too many close requests for this lobby.")
+                identities.append(request_id)
+            state["entries"] = entries
+            if entry.get("closed"):
+                return {"status": "closed", "messageId": entry["messageId"], "lobbyStatus": "closed"}
+            if state.get("lockUntil", 0) > now:
+                raise Problem(429, "A lobby request is in progress.", min(120, state["lockUntil"] - now))
+            entry["closing"] = True
+            state.update(entries=entries, lockUntil=now + 15)
+            return {"canonical": canonical, "messageId": entry["messageId"], "lobbyName": entry.get("lobbyName", "")}
+
+        result = self.repo.edit(subject, claim)
+        if result.get("status") == "closed":
+            return result
+        canonical = result["canonical"]
+        title = re.sub(r"([\\`*_~|<>\[\]])", r"\\\1", result["lobbyName"])
+        name_line = f"Lobby: {title}\n" if title else ""
+        message = {"content": f"Lobby closed by <@{host}>.\n{name_line}Lobby code: `{code}`", "allowed_mentions": {"parse": []}}
+        try:
+            edited = self.http.json(f"https://discord.com/api/v10/channels/{self.config.channel}/messages/{result['messageId']}", bot_auth, message, method="PATCH")
+            require(edited.get("id") == result["messageId"], 503, "Discord did not confirm the lobby update.")
+        except UpstreamError as error:
+            # A removed announcement is already unavailable to players. Other
+            # failures may be retried: PATCH writes the same closed content.
+            if error.status != 404:
+                def failed(state):
+                    state["lockUntil"] = 0
+                self.repo.edit(subject, failed)
+                raise Problem(429 if error.status == 429 else 503, "The lobby close could not be confirmed.", error.retry_after or 15) from None
+
+        def complete(state):
+            state["entries"][canonical].update(closed=True, closing=False)
+            state["lockUntil"] = 0
+            return {"status": "closed", "messageId": result["messageId"], "lobbyStatus": "closed"}
         return self.repo.edit(subject, complete)

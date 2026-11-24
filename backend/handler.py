@@ -58,7 +58,7 @@ def handler(event, context):
         method = event.get("requestContext", {}).get("http", {}).get("method", "")
         path = event.get("rawPath", "")
         if path == "/health" and method == "GET":
-            return response(200, {"service": "SGL Hosting", "enabled": os.environ.get("ANNOUNCEMENTS_ENABLED", "false") == "true"})
+            return response(200, {"service": "SGL Hosting", "enabled": os.environ.get("ANNOUNCEMENTS_ENABLED", "false") == "true", "lobbyActions": ["open", "close"]})
         if path != "/announcements" or method != "POST":
             return response(404, {"error": "Not found."})
         raw = event.get("body", "")
