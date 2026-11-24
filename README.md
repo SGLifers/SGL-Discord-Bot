@@ -24,7 +24,7 @@ No Gateway events are consumed, so Message Content intent is not used. The servi
 
 ## Deploy later
 
-Requirements: AWS CLI v2, PowerShell, a refreshed AWS profile, and permissions for CloudFormation, IAM, Lambda, API Gateway, DynamoDB, Secrets Manager, S3, CloudWatch and SNS. The script verifies the AWS account before changing resources. The default region is us-west-2. A monitored alarm email and either allowed hosts or a host role are required.
+Requirements: AWS CLI v2, PowerShell, a refreshed AWS profile, and permissions for CloudFormation, IAM, Lambda, API Gateway, DynamoDB, Secrets Manager, S3, CloudWatch and SNS. The script verifies the AWS account before changing resources. The default region is us-west-2. A monitored alarm email is required. Disabled initial deployments can omit the host policy; either allowed hosts or a host role must be configured before enabling announcements.
 
 ```powershell
 ./infra/deploy.ps1 -Profile YOUR_PROFILE -AccountId YOUR_ACCOUNT_ID -GuildId YOUR_SERVER_ID -ChannelId YOUR_CHANNEL_ID -HostRoleId YOUR_HOST_ROLE_ID -AlarmEmail YOU@example.com -PlanOnly

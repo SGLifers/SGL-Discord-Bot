@@ -13,6 +13,11 @@ $parameters=@{Profile='fixture';AccountId='633398616560';GuildId='12345678901234
 try {
     & $script @parameters -PlanOnly
     if($global:hostingMockCalls.Count -ne 1 -or $global:hostingMockCalls[0][0] -ne 'sts'){throw 'PlanOnly performed an AWS mutation.'}
+    $withoutHosts=$parameters.Clone();$withoutHosts.Remove('AllowedHostIds')
+    & $script @withoutHosts -PlanOnly
+    $rejected=$false
+    try { & $script @withoutHosts -EnableAnnouncements -PlanOnly } catch { $rejected=$true }
+    if(-not $rejected){throw 'Enabled announcements without an authorization policy.'}
     $global:hostingMockCalls.Clear()
     & $script @parameters
     $deploy=@($global:hostingMockCalls | Where-Object {$_[0] -eq 'cloudformation' -and $_[1] -eq 'deploy'})

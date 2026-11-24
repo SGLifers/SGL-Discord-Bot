@@ -12,7 +12,7 @@ param(
     [switch]$PlanOnly
 )
 $ErrorActionPreference='Stop'
-if(-not $HostRoleId -and -not $AllowedHostIds){throw 'Specify a host role or an explicit host allowlist.'}
+if($EnableAnnouncements -and -not $HostRoleId -and -not $AllowedHostIds){throw 'Specify a host role or an explicit host allowlist before enabling announcements.'}
 if($AlarmEmail -notmatch '^[^\s@]+@[^\s@]+\.[^\s@]+$'){throw 'Specify an alarm email address.'}
 function Invoke-HostingAws([Parameter(ValueFromRemainingArguments=$true)][string[]]$Arguments) {
     $result=& aws @Arguments --profile $Profile --region $Region --no-cli-pager
