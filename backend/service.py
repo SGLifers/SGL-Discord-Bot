@@ -121,6 +121,7 @@ class Announcer:
         except UpstreamError as error:
             raise Problem(403 if error.status == 404 else 503, "Server membership or bot configuration could not be verified.", error.retry_after) from None
         now = self.now()
+        subject = f"{self.config.guild}:{self.config.channel}:{host}"
 
         def claim(state):
             entries = {k: v for k, v in state.get("entries", {}).items() if v["created"] > now - 86400}
@@ -148,11 +149,11 @@ class Announcer:
             state.update(entries=entries, lockUntil=now + 15, nextAllowed=now + self.config.cooldown, day=day, daily=daily)
             return {"status": "claimed", "canonical": canonical, "lobbyName": previous.get("lobbyName", "")}
 
-        result = self.repo.edit(host, claim)
+        result = self.repo.edit(subject, claim)
         if result["status"] == "duplicate":
             return result
         canonical = result["canonical"]
-        nonce = hashlib.sha256((host + ":" + canonical).encode()).hexdigest()[:24]
+        nonce = hashlib.sha256((subject + ":" + canonical).encode()).hexdigest()[:24]
         # A pending retry keeps its original name, just as it keeps its nonce.
         title = re.sub(r"([\\`*_~|<>\[\]])", r"\\\1", result["lobbyName"])
         name_line = f"Lobby: {title}\n" if title else ""
@@ -173,11 +174,11 @@ class Announcer:
                 # A timeout/5xx may have delivered. Keep pending and retry only with
                 # the same nonce within the bounded Discord nonce window.
                 return None
-            self.repo.edit(host, failed)
+            self.repo.edit(subject, failed)
             raise Problem(429 if error.status == 429 else 503, "Discord announcement is unavailable.", error.retry_after or (15 if error.status == 0 or error.status >= 500 else 0)) from None
 
         def complete(state):
             state["entries"][canonical].update(status="sent", messageId=posted["id"])
             state["lockUntil"] = 0
             return {"status": "sent", "messageId": posted["id"]}
-        return self.repo.edit(host, complete)
+        return self.repo.edit(subject, complete)

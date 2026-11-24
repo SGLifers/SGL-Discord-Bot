@@ -88,6 +88,15 @@ class Announcements(unittest.TestCase):
         for request in ["a" * 32, "b" * 32]: self.assertEqual(self.send(request=request)["status"], "duplicate")
         self.assertEqual(len([c for c in self.http.calls if c[0].endswith("/messages")]), 1)
 
+    def test_destination_change_does_not_reuse_test_receipts(self):
+        self.send(name="Test lobby")
+        self.service.config = replace(CONFIG, channel="623456789012345678")
+        self.assertEqual(self.send(name="Real lobby")["status"], "sent")
+        posts = [c for c in self.http.calls if c[0].endswith("/messages")]
+        self.assertNotEqual(posts[0][0], posts[1][0])
+        self.assertNotEqual(posts[0][2]["nonce"], posts[1][2]["nonce"])
+        self.assertEqual(len(self.http.messages), 2)
+
     def test_request_identity_is_bound_to_code(self):
         self.send()
         self.problem(409, lambda: self.send("OTHER1"))
