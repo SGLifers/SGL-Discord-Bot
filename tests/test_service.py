@@ -63,8 +63,8 @@ class Announcements(unittest.TestCase):
         self.repo, self.http = Memory(), FakeHttp()
         self.service = Announcer(CONFIG, self.repo, self.http, lambda: BOT, lambda: self.now)
 
-    def send(self, code="ABC123", request="a" * 32):
-        return self.service.announce("Bearer " + TOKEN, {"code": code, "requestId": request})
+    def send(self, code="ABC123", request="a" * 32, name=""):
+        return self.service.announce("Bearer " + TOKEN, {"code": code, "requestId": request, "lobbyName": name})
 
     def problem(self, status, fn):
         with self.assertRaises(Problem) as result: fn()
@@ -98,8 +98,33 @@ class Announcements(unittest.TestCase):
         self.assertFalse(self.http.calls)
 
     def test_invalid_codes(self):
-        for code in ["abc123", "a", "@everyone", "AB\n123", "ABC`123", "https://example.com", "X" * 33]:
+        for code in ["abc123", "a", "ABCDE", "ABCDEFG", "ABC-12", "@everyone", "AB\n123", "ABC`123", "https://example.com", "X" * 33]:
             self.problem(400, lambda: self.send(code))
+
+    def test_lobby_name_is_included_as_escaped_plain_text(self):
+        self.send(name=" Friday **games** <@everyone> ")
+        message = self.http.calls[-1][2]
+        self.assertIn("Lobby: Friday \\*\\*games\\*\\* \\<@everyone\\>", message["content"])
+        self.assertEqual(message["allowed_mentions"], {"parse": []})
+
+    def test_invalid_lobby_names(self):
+        for name in [None, 42, "x" * 81, "one\ntwo", "hidden\u202ename", "one\u2028two"]:
+            self.problem(400, lambda: self.send(name=name))
+
+    def test_name_is_bound_to_request_identity(self):
+        self.send(name="Original name")
+        self.problem(409, lambda: self.send(name="Changed name"))
+        self.assertEqual(self.send(request="b" * 32, name="Changed name")["status"], "duplicate")
+        self.assertEqual(len(self.http.messages), 1)
+
+    def test_pending_name_changes_keep_original_delivery_payload(self):
+        self.http.timeout_after_post = True
+        self.problem(503, lambda: self.send(name="Original name"))
+        self.now += 16
+        self.send(request="b" * 32, name="Changed name")
+        posts = [c[2] for c in self.http.calls if c[0].endswith("/messages")]
+        self.assertEqual(posts[0], posts[1])
+        self.assertIn("Original name", posts[1]["content"])
 
     def test_missing_expired_or_forged_identity(self):
         self.problem(401, lambda: self.service.announce("Bearer short", {}))

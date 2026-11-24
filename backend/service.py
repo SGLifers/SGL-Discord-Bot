@@ -3,6 +3,7 @@ import hashlib
 import json
 import re
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -93,9 +94,14 @@ class Announcer:
         self.config.validate()
         require(self.config.enabled, 503, "Announcements are disabled.")
         require(isinstance(authorization, str) and re.fullmatch(r"Bearer [A-Za-z0-9_-]{32,512}", authorization), 401, "Sign in with Discord.")
-        require(isinstance(body, dict) and set(body) == {"code", "requestId"}, 400, "Expected a lobby code and request identity.")
+        require(isinstance(body, dict) and {"code", "requestId"} <= set(body) <= {"code", "requestId", "lobbyName"}, 400, "Expected a lobby code, optional name and request identity.")
         code, request_id = body["code"], body["requestId"]
-        require(isinstance(code, str) and re.fullmatch(r"[A-Z0-9][A-Z0-9-]{3,31}", code), 400, "Invalid lobby code.")
+        require(isinstance(code, str) and re.fullmatch(r"[A-Z0-9]{6}", code), 400, "Lobby codes must contain six letters or numbers.")
+        lobby_name = body.get("lobbyName", "")
+        require(isinstance(lobby_name, str), 400, "Invalid lobby name.")
+        lobby_name = lobby_name.strip()
+        require(not any(unicodedata.category(c) in {"Cc", "Cf", "Cs", "Zl", "Zp"} for c in lobby_name), 400, "Lobby names must be on one line.")
+        require(len(lobby_name.encode("utf-16-le")) <= 160, 400, "Lobby names may contain up to 80 characters.")
         require(isinstance(request_id, str) and re.fullmatch(r"[a-f0-9]{32}", request_id), 400, "Invalid request identity.")
         try:
             user = self.http.json(self.config.identity_url.rstrip("/") + "/me", authorization)
@@ -119,7 +125,7 @@ class Announcer:
         def claim(state):
             entries = {k: v for k, v in state.get("entries", {}).items() if v["created"] > now - 86400}
             same = entries.get(request_id)
-            require(same is None or same["code"] == code, 409, "Request identity was used for another code.")
+            require(same is None or same["code"] == code and same.get("lobbyName", "") == lobby_name, 409, "Request identity was used for another announcement.")
             canonical = request_id if same else next((k for k, v in entries.items() if v["code"] == code), request_id)
             previous = entries.get(canonical)
             if previous and previous["status"] == "sent":
@@ -136,18 +142,21 @@ class Announcer:
             if previous is None:
                 require(daily < self.config.daily_limit, 429, "Daily announcement limit reached.")
                 daily += 1
-                previous = {"code": code, "created": now, "attempts": 0}
+                previous = {"code": code, "lobbyName": lobby_name, "created": now, "attempts": 0}
             previous.update(status="pending", attempted=now if previous.get("status") != "pending" else previous["attempted"], attempts=previous["attempts"] + 1)
             entries[canonical] = previous
             state.update(entries=entries, lockUntil=now + 15, nextAllowed=now + self.config.cooldown, day=day, daily=daily)
-            return {"status": "claimed", "canonical": canonical}
+            return {"status": "claimed", "canonical": canonical, "lobbyName": previous.get("lobbyName", "")}
 
         result = self.repo.edit(host, claim)
         if result["status"] == "duplicate":
             return result
         canonical = result["canonical"]
         nonce = hashlib.sha256((host + ":" + canonical).encode()).hexdigest()[:24]
-        message = {"content": f"New match started by <@{host}>.\nLobby code: `{code}`", "allowed_mentions": {"parse": []}, "nonce": nonce, "enforce_nonce": True}
+        # A pending retry keeps its original name, just as it keeps its nonce.
+        title = re.sub(r"([\\`*_~|<>\[\]])", r"\\\1", result["lobbyName"])
+        name_line = f"Lobby: {title}\n" if title else ""
+        message = {"content": f"New match started by <@{host}>.\n{name_line}Lobby code: `{code}`", "allowed_mentions": {"parse": []}, "nonce": nonce, "enforce_nonce": True}
         try:
             posted = self.http.json(f"https://discord.com/api/v10/channels/{self.config.channel}/messages", bot_auth, message)
             require(snowflake(posted.get("id")), 503, "Discord did not confirm delivery.")
