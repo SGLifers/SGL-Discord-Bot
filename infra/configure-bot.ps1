@@ -2,7 +2,10 @@ param([Parameter(Mandatory)][string]$Profile,[string]$Region='us-west-2',[string
 $ErrorActionPreference='Stop'
 $output=& aws cloudformation describe-stacks --stack-name $StackName --profile $Profile --region $Region --query 'Stacks[0].Outputs' --output json --no-cli-pager
 if($LASTEXITCODE -ne 0){throw 'Could not read the hosting stack.'}
-$arn=($output | ConvertFrom-Json | Where-Object OutputKey -eq 'BotSecretArn').OutputValue
+# Windows PowerShell 5.1 emits a JSON array as one pipeline item. Parse it
+# separately so the next pipeline enumerates the individual stack outputs.
+$stackOutputs=$output | ConvertFrom-Json
+$arn=($stackOutputs | Where-Object OutputKey -eq 'BotSecretArn').OutputValue
 if(-not $arn){throw 'The stack has no bot secret output.'}
 $secure=Read-Host 'Discord Bot token (not the OAuth client secret)' -AsSecureString
 $pointer=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
