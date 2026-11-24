@@ -1,4 +1,5 @@
 $ErrorActionPreference='Stop'
+[int]$initialNativeExitCode=$global:LASTEXITCODE
 $global:configureMockJson=''
 $global:configureMockExitCode=0
 $global:configurePromptReached=$false
@@ -43,4 +44,7 @@ try {
 finally {
     Remove-Item Function:\aws
     Remove-Item Function:\Read-Host
+    # The last fixture deliberately simulates AWS exit code 1. Restore the
+    # caller's exit code so Actions does not mistake that fixture for failure.
+    $global:LASTEXITCODE=$initialNativeExitCode
 }
