@@ -1,0 +1,21 @@
+name: Validate SGL Discord bot
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - run: python -m unittest discover -s tests -v
+        env: {PYTHONPATH: backend}
+      - run: pip install 'cfn-lint>=1.40,<2'
+      - run: cfn-lint -r us-west-2 -t infra/template.yaml
+  deployment-script:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - shell: pwsh
+        run: ./tests/test-deploy.ps1
