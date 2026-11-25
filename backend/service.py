@@ -86,7 +86,7 @@ class Http:
             raise UpstreamError() from None
 
 
-def lobby_message(host, code, lobby_name, closed=False):
+def lobby_message(host, code, lobby_name, closed=False, gamemode=""):
     """One compact card; clearing content also converts legacy text announcements on close."""
     name = re.sub(r"([\\`*_~|<>\[\]])", r"\\\1", lobby_name)
     embed = {
@@ -94,6 +94,9 @@ def lobby_message(host, code, lobby_name, closed=False):
         "color": 0xED4245 if closed else 0x57F287,
         "description": f"Name: {name or 'Unnamed lobby'}\nCode: `{code}`\nHost: <@{host}>",
     }
+    if gamemode:
+        mode = re.sub(r"([\\`*_~|<>\[\]])", r"\\\1", gamemode)
+        embed["description"] += f"\nGamemode: {mode}"
     return {"content": "", "embeds": [embed], "allowed_mentions": {"parse": []}}
 
 
@@ -105,9 +108,9 @@ class Announcer:
         self.config.validate()
         require(self.config.enabled, 503, "Announcements are disabled.")
         require(isinstance(authorization, str) and re.fullmatch(r"Bearer [A-Za-z0-9_-]{32,512}", authorization), 401, "Sign in with Discord.")
-        require(isinstance(body, dict) and {"code", "requestId"} <= set(body) <= {"code", "requestId", "lobbyName", "action"}, 400, "Expected a lobby code, optional name, action and request identity.")
+        require(isinstance(body, dict) and {"code", "requestId"} <= set(body) <= {"code", "requestId", "lobbyName", "action", "gamemode", "announcementId"}, 400, "Expected a lobby code, optional name, action and request identity.")
         action = body.get("action", "open")
-        require(action in ("open", "close"), 400, "Choose open or close.")
+        require(action in ("open", "close", "update"), 400, "Choose open, close or update.")
         code, request_id = body["code"], body["requestId"]
         require(isinstance(code, str) and re.fullmatch(r"[A-Z0-9]{6}", code), 400, "Lobby codes must contain six letters or numbers.")
         lobby_name = body.get("lobbyName", "")
@@ -115,6 +118,13 @@ class Announcer:
         lobby_name = lobby_name.strip()
         require(not any(unicodedata.category(c) in {"Cc", "Cf", "Cs", "Zl", "Zp"} for c in lobby_name), 400, "Lobby names must be on one line.")
         require(len(lobby_name.encode("utf-16-le")) <= 160, 400, "Lobby names may contain up to 80 characters.")
+        gamemode = body.get("gamemode", "")
+        require(isinstance(gamemode, str), 400, "Invalid gamemode.")
+        gamemode = gamemode.strip()
+        require(not any(unicodedata.category(c) in {"Cc", "Cf", "Cs", "Zl", "Zp"} for c in gamemode), 400, "Gamemodes must be on one line.")
+        require(len(gamemode.encode("utf-16-le")) <= 240, 400, "Gamemodes may contain up to 120 characters.")
+        announcement_id = body.get("announcementId")
+        require(action != "update" or isinstance(announcement_id, str) and re.fullmatch(r"[a-f0-9]{32}", announcement_id), 400, "An update requires its original announcement identity.")
         require(isinstance(request_id, str) and re.fullmatch(r"[a-f0-9]{32}", request_id), 400, "Invalid request identity.")
         try:
             user = self.http.json(self.config.identity_url.rstrip("/") + "/me", authorization)
@@ -135,20 +145,22 @@ class Announcer:
             raise Problem(403 if error.status == 404 else 503, "Server membership or bot configuration could not be verified.", error.retry_after) from None
         now = self.now()
         subject = f"{self.config.guild}:{self.config.channel}:{host}"
+        if action == "update":
+            return self.update(subject, host, bot_auth, code, request_id, announcement_id, gamemode, now)
         if action == "close":
             return self.close(subject, host, bot_auth, code, request_id, now)
 
         def claim(state):
             entries = {k: v for k, v in state.get("entries", {}).items() if v["created"] > now - 86400}
-            require(not any(request_id in v.get("closeRequestIds", []) for v in entries.values()), 409, "Request identity was used to close a lobby.")
+            require(not any(request_id in v.get("closeRequestIds", []) or request_id in v.get("updates", {}) for v in entries.values()), 409, "Request identity was used to close a lobby.")
             same = entries.get(request_id)
-            require(same is None or same["code"] == code and same.get("lobbyName", "") == lobby_name, 409, "Request identity was used for another announcement.")
+            require(same is None or same["code"] == code and same.get("lobbyName", "") == lobby_name and same.get("initialGamemode", "") == gamemode, 409, "Request identity was used for another announcement.")
             canonical = request_id if same else next((k for k, v in entries.items() if v["code"] == code and not v.get("closed")), request_id)
             previous = entries.get(canonical)
             if previous and previous["status"] == "sent":
                 if previous.get("closing"):
                     raise Problem(429, "This lobby is being closed. Retry Close Lobby.", 15)
-                return {"status": "duplicate", "messageId": previous["messageId"], "lobbyStatus": "closed" if previous.get("closed") else "open"}
+                return {"status": "duplicate", "messageId": previous["messageId"], "announcementId": canonical, "lobbyStatus": "closed" if previous.get("closed") else "open"}
             if previous and previous["status"] == "pending":
                 require(now - previous["attempted"] < 120 and previous["attempts"] < 3, 409, "Delivery is uncertain. Check the Discord channel before retrying.")
             if state.get("lockUntil", 0) > now:
@@ -161,11 +173,11 @@ class Announcer:
             if previous is None:
                 require(daily < self.config.daily_limit, 429, "Daily announcement limit reached.")
                 daily += 1
-                previous = {"code": code, "lobbyName": lobby_name, "created": now, "attempts": 0}
+                previous = {"code": code, "lobbyName": lobby_name, "gamemode": gamemode, "initialGamemode": gamemode, "created": now, "attempts": 0}
             previous.update(status="pending", attempted=now if previous.get("status") != "pending" else previous["attempted"], attempts=previous["attempts"] + 1)
             entries[canonical] = previous
             state.update(entries=entries, lockUntil=now + 15, nextAllowed=now + self.config.cooldown, day=day, daily=daily)
-            return {"status": "claimed", "canonical": canonical, "lobbyName": previous.get("lobbyName", "")}
+            return {"status": "claimed", "canonical": canonical, "lobbyName": previous.get("lobbyName", ""), "gamemode": previous.get("gamemode", "")}
 
         result = self.repo.edit(subject, claim)
         if result["status"] == "duplicate":
@@ -173,7 +185,7 @@ class Announcer:
         canonical = result["canonical"]
         nonce = hashlib.sha256((subject + ":" + canonical).encode()).hexdigest()[:24]
         # A pending retry keeps its original name, just as it keeps its nonce.
-        message = lobby_message(host, code, result["lobbyName"])
+        message = lobby_message(host, code, result["lobbyName"], gamemode=result["gamemode"])
         message.update(nonce=nonce, enforce_nonce=True)
         try:
             posted = self.http.json(f"https://discord.com/api/v10/channels/{self.config.channel}/messages", bot_auth, message)
@@ -197,13 +209,13 @@ class Announcer:
         def complete(state):
             state["entries"][canonical].update(status="sent", messageId=posted["id"])
             state["lockUntil"] = 0
-            return {"status": "sent", "messageId": posted["id"], "lobbyStatus": "open"}
+            return {"status": "sent", "messageId": posted["id"], "announcementId": canonical, "lobbyStatus": "open"}
         return self.repo.edit(subject, complete)
 
     def close(self, subject, host, bot_auth, code, request_id, now):
         def claim(state):
             entries = {k: v for k, v in state.get("entries", {}).items() if v["created"] > now - 86400}
-            require(request_id not in entries, 409, "Request identity was used to open a lobby.")
+            require(request_id not in entries and not any(request_id in v.get("updates", {}) for v in entries.values()), 409, "Request identity was already used for another action.")
             # Bind close retries to the original lobby, including after the same
             # code is reopened. An old retry must never close a newer lobby.
             canonical = next((k for k, v in entries.items() if request_id in v.get("closeRequestIds", [])), None)
@@ -226,13 +238,13 @@ class Announcer:
                 raise Problem(429, "A lobby request is in progress.", min(120, state["lockUntil"] - now))
             entry["closing"] = True
             state.update(entries=entries, lockUntil=now + 15)
-            return {"canonical": canonical, "messageId": entry["messageId"], "lobbyName": entry.get("lobbyName", "")}
+            return {"canonical": canonical, "messageId": entry["messageId"], "lobbyName": entry.get("lobbyName", ""), "gamemode": entry.get("gamemode", "")}
 
         result = self.repo.edit(subject, claim)
         if result.get("status") == "closed":
             return result
         canonical = result["canonical"]
-        message = lobby_message(host, code, result["lobbyName"], closed=True)
+        message = lobby_message(host, code, result["lobbyName"], closed=True, gamemode=result["gamemode"])
         try:
             edited = self.http.json(f"https://discord.com/api/v10/channels/{self.config.channel}/messages/{result['messageId']}", bot_auth, message, method="PATCH")
             require(edited.get("id") == result["messageId"], 503, "Discord did not confirm the lobby update.")
@@ -249,4 +261,50 @@ class Announcer:
             state["entries"][canonical].update(closed=True, closing=False)
             state["lockUntil"] = 0
             return {"status": "closed", "messageId": result["messageId"], "lobbyStatus": "closed"}
+        return self.repo.edit(subject, complete)
+
+    def update(self, subject, host, bot_auth, code, request_id, announcement_id, gamemode, now):
+        def claim(state):
+            entries = {k: v for k, v in state.get("entries", {}).items() if v["created"] > now - 86400}
+            entry = entries.get(announcement_id)
+            require(entry is not None and entry["code"] == code and not entry.get("closed"), 404, "No open announcement was found for this lobby.")
+            require(entry["status"] == "sent" and not entry.get("closing"), 409, "Confirm the open or close request before updating this lobby.")
+            require(request_id not in entries and not any(request_id in v.get("closeRequestIds", []) or request_id in v.get("updates", {}) and k != announcement_id for k, v in entries.items()), 409, "Request identity was already used for another action.")
+            updates = entry.setdefault("updates", {})
+            previous = updates.get(request_id)
+            require(previous is None or previous["gamemode"] == gamemode, 409, "Request identity was used for another gamemode.")
+            if previous and previous["status"] == "sent":
+                return {"status": "duplicate", "messageId": entry["messageId"], "announcementId": announcement_id, "lobbyStatus": "open"}
+            require(previous is None or entry.get("latestUpdateId") == request_id, 409, "A newer update superseded this request.")
+            if state.get("lockUntil", 0) > now:
+                raise Problem(429, "A lobby request is in progress.", min(120, state["lockUntil"] - now))
+            if previous is None:
+                require(sum(len(v.get("updates", {})) for v in entries.values()) < 256, 429, "Daily gamemode update limit reached.")
+                updates[request_id] = {"gamemode": gamemode, "status": "pending"}
+            entry["latestUpdateId"] = request_id
+            state.update(entries=entries, lockUntil=now + 45)
+            return {"messageId": entry["messageId"], "lobbyName": entry.get("lobbyName", "")}
+
+        result = self.repo.edit(subject, claim)
+        if result.get("status") == "duplicate":
+            return result
+        message = lobby_message(host, code, result["lobbyName"], gamemode=gamemode)
+        try:
+            edited = self.http.json(f"https://discord.com/api/v10/channels/{self.config.channel}/messages/{result['messageId']}", bot_auth, message, method="PATCH")
+            require(edited.get("id") == result["messageId"], 503, "Discord did not confirm the gamemode update.")
+        except UpstreamError as error:
+            def failed(state):
+                state["lockUntil"] = 0
+                if error.status == 404:
+                    state["entries"][announcement_id]["closed"] = True
+            self.repo.edit(subject, failed)
+            raise Problem(404 if error.status == 404 else 429 if error.status == 429 else 503, "The gamemode update could not be confirmed.", error.retry_after or 15) from None
+
+        def complete(state):
+            entry = state["entries"][announcement_id]
+            require(entry.get("latestUpdateId") == request_id and not entry.get("closed"), 409, "The lobby changed before this update completed.")
+            entry["gamemode"] = gamemode
+            entry["updates"][request_id]["status"] = "sent"
+            state["lockUntil"] = 0
+            return {"status": "updated", "messageId": entry["messageId"], "announcementId": announcement_id, "lobbyStatus": "open"}
         return self.repo.edit(subject, complete)

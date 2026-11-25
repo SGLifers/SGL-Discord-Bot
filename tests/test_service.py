@@ -335,6 +335,90 @@ class Announcements(unittest.TestCase):
         self.problem(400, lambda: self.service.announce("Bearer " + TOKEN, {"code": "ABC123", "requestId": "a" * 32, "action": "delete"}))
         self.assertFalse(self.http.calls)
 
+    def send_mode(self, mode="SWAT", request="a" * 32):
+        return self.service.announce("Bearer " + TOKEN, {"code": "ABC123", "requestId": request, "lobbyName": "Test Lobby", "gamemode": mode})
+
+    def update_mode(self, mode="KOTH", request="d" * 32, announcement="a" * 32):
+        return self.service.announce("Bearer " + TOKEN, {"code": "ABC123", "requestId": request, "action": "update", "announcementId": announcement, "gamemode": mode})
+
+    def test_optional_gamemode_and_text_escaping(self):
+        self.send_mode("Custom **SWAT** <@everyone>")
+        embed = self.http.calls[-1][2]["embeds"][0]
+        self.assertEqual(embed["description"], f"Name: Test Lobby\nCode: `ABC123`\nHost: <@{HOST}>\nGamemode: Custom \\*\\*SWAT\\*\\* \\<@everyone\\>")
+        self.assertEqual(self.http.calls[-1][2]["allowed_mentions"], {"parse": []})
+
+    def test_invalid_gamemodes_rejected_before_discord(self):
+        for mode in [None, 1, "x" * 121, "one\ntwo", "hidden\u202ename", "one\u2028two"]:
+            self.problem(400, lambda: self.send_mode(mode))
+        self.assertFalse(self.http.calls)
+
+    def test_update_edits_same_message_and_unset_removes_field(self):
+        opened = self.send_mode()
+        self.assertEqual(opened["announcementId"], "a" * 32)
+        result = self.update_mode("KOTH")
+        self.assertEqual(result["status"], "updated")
+        self.assertEqual(result["messageId"], opened["messageId"])
+        self.assertEqual(len(self.http.messages), 1)
+        self.assertTrue(self.http.edits[-1][1]["embeds"][0]["description"].endswith("Gamemode: KOTH"))
+        self.update_mode("", request="e" * 32)
+        self.assertNotIn("Gamemode:", self.http.edits[-1][1]["embeds"][0]["description"])
+
+    def test_close_preserves_latest_gamemode(self):
+        self.send_mode(); self.update_mode("Teabag Confirmed"); self.close()
+        embed = self.http.edits[-1][1]["embeds"][0]
+        self.assertEqual(embed["title"], "Lobby closed")
+        self.assertTrue(embed["description"].endswith("Gamemode: Teabag Confirmed"))
+
+    def test_update_replay_and_payload_identity(self):
+        self.send_mode(); self.update_mode()
+        self.assertEqual(self.update_mode()["status"], "duplicate")
+        self.assertEqual(len(self.http.edits), 1)
+        self.problem(409, lambda: self.update_mode("Different"))
+        self.problem(409, lambda: self.update_mode(request="a" * 32))
+        self.problem(409, lambda: self.close(request="d" * 32))
+        self.problem(409, lambda: self.send_mode(request="d" * 32))
+
+    def test_old_update_cannot_modify_reopened_lobby(self):
+        self.send_mode(); self.update_mode(); self.close(); self.now += 61
+        self.send_mode(request="b" * 32)
+        self.problem(404, self.update_mode)
+        self.problem(404, lambda: self.update_mode(announcement="f" * 32))
+        self.assertEqual(len(self.http.edits), 2)
+
+    def test_update_timeout_retry_is_same_patch(self):
+        self.send_mode(); self.http.fail_edit = 500
+        self.problem(503, self.update_mode)
+        self.update_mode()
+        self.assertEqual(self.http.edits[0], self.http.edits[1])
+        self.assertEqual(len(self.http.messages), 1)
+
+    def test_superseded_uncertain_update_cannot_overwrite_newer_mode(self):
+        self.send_mode(); self.http.fail_edit = 500
+        self.problem(503, self.update_mode)
+        self.update_mode("Newer", request="e" * 32)
+        self.problem(409, self.update_mode)
+        self.assertEqual(len(self.http.edits), 2)
+
+    def test_update_requires_current_host_and_open_announcement(self):
+        self.problem(404, self.update_mode)
+        self.send_mode(); self.close()
+        self.problem(404, self.update_mode)
+        self.http.user["discordId"] = "623456789012345678"
+        self.http.member["user"]["id"] = self.http.user["discordId"]
+        self.problem(403, self.update_mode)
+
+    def test_deleted_announcement_update_unlocks_lobby(self):
+        self.send_mode(); self.http.fail_edit = 404
+        self.problem(404, self.update_mode)
+        self.assertTrue(next(iter(self.repo.state.values()))["entries"]["a" * 32]["closed"])
+
+    def test_update_requires_announcement_id_and_respects_limits(self):
+        self.send_mode()
+        self.problem(400, lambda: self.service.announce("Bearer " + TOKEN, {"code":"ABC123", "requestId":"d"*32, "action":"update"}))
+        self.service.config = replace(CONFIG, daily_limit=1)
+        self.update_mode()
+        self.assertEqual(next(iter(self.repo.state.values()))["daily"], 1)
+
 
 class EntryPoint(unittest.TestCase):
     def test_health_and_rejected_inputs(self):
