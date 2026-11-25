@@ -92,14 +92,8 @@ def lobby_message(host, code, lobby_name, closed=False):
     embed = {
         "title": "Lobby closed" if closed else "Lobby open",
         "color": 0xED4245 if closed else 0x57F287,
-        "fields": [
-            {"name": "Host", "value": f"<@{host}>", "inline": True},
-            {"name": "Lobby code", "value": f"`{code}`", "inline": True},
-        ],
-        "footer": {"text": "SplitGate Lifers"},
+        "description": f"Name: {name or 'Unnamed lobby'}\nCode: `{code}`\nHost: <@{host}>",
     }
-    if name:
-        embed["description"] = name
     return {"content": "", "embeds": [embed], "allowed_mentions": {"parse": []}}
 
 
