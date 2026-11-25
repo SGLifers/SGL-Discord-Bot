@@ -90,7 +90,7 @@ class Announcements(unittest.TestCase):
         embed = body["embeds"][0]
         self.assertEqual(embed["title"], "Lobby open")
         self.assertEqual(embed["color"], 0x57F287)
-        self.assertEqual(embed["description"], f"Name: Unnamed lobby\n\nCode: `ABC123`\n\nHost: <@{HOST}>")
+        self.assertEqual(embed["description"], f"Name: Unnamed lobby\nCode: `ABC123`\nHost: <@{HOST}>")
         self.assertNotIn("fields", embed)
         self.assertNotIn("footer", embed)
         self.assertEqual(body["allowed_mentions"], {"parse": []})
@@ -129,7 +129,7 @@ class Announcements(unittest.TestCase):
     def test_lobby_name_is_included_as_escaped_plain_text(self):
         self.send(name=" Friday **games** <@everyone> ")
         message = self.http.calls[-1][2]
-        self.assertEqual(f"Name: Friday \\*\\*games\\*\\* \\<@everyone\\>\n\nCode: `ABC123`\n\nHost: <@{HOST}>", message["embeds"][0]["description"])
+        self.assertEqual(f"Name: Friday \\*\\*games\\*\\* \\<@everyone\\>\nCode: `ABC123`\nHost: <@{HOST}>", message["embeds"][0]["description"])
         self.assertEqual(message["allowed_mentions"], {"parse": []})
 
     def test_invalid_lobby_names(self):
@@ -149,7 +149,7 @@ class Announcements(unittest.TestCase):
         self.send(request="b" * 32, name="Changed name")
         posts = [c[2] for c in self.http.calls if c[0].endswith("/messages")]
         self.assertEqual(posts[0], posts[1])
-        self.assertEqual(f"Name: Original name\n\nCode: `ABC123`\n\nHost: <@{HOST}>", posts[1]["embeds"][0]["description"])
+        self.assertEqual(f"Name: Original name\nCode: `ABC123`\nHost: <@{HOST}>", posts[1]["embeds"][0]["description"])
 
     def test_missing_expired_or_forged_identity(self):
         self.problem(401, lambda: self.service.announce("Bearer short", {}))
@@ -247,7 +247,7 @@ class Announcements(unittest.TestCase):
         embed = body["embeds"][0]
         self.assertEqual(embed["title"], "Lobby closed")
         self.assertEqual(embed["color"], 0xED4245)
-        self.assertEqual(embed["description"], f"Name: Friday \\*\\*games\\*\\*\n\nCode: `ABC123`\n\nHost: <@{HOST}>")
+        self.assertEqual(embed["description"], f"Name: Friday \\*\\*games\\*\\*\nCode: `ABC123`\nHost: <@{HOST}>")
         self.assertNotIn("fields", embed)
         self.assertNotIn("footer", embed)
         self.assertEqual(body["allowed_mentions"], {"parse": []})
@@ -344,7 +344,7 @@ class Announcements(unittest.TestCase):
     def test_optional_gamemode_and_text_escaping(self):
         self.send_mode("Custom **SWAT** <@everyone>")
         embed = self.http.calls[-1][2]["embeds"][0]
-        self.assertEqual(embed["description"], f"Name: Test Lobby\n\nCode: `ABC123`\n\nHost: <@{HOST}>\n\nGamemode: Custom \\*\\*SWAT\\*\\* \\<@everyone\\>")
+        self.assertEqual(embed["description"], f"Name: Test Lobby\nCode: `ABC123`\nHost: <@{HOST}>\nGamemode: Custom \\*\\*SWAT\\*\\* \\<@everyone\\>")
         self.assertEqual(self.http.calls[-1][2]["allowed_mentions"], {"parse": []})
 
     def test_invalid_gamemodes_rejected_before_discord(self):
@@ -419,10 +419,10 @@ class Announcements(unittest.TestCase):
         self.update_mode()
         self.assertEqual(next(iter(self.repo.state.values()))["daily"], 1)
 
-    def test_map_is_shown_with_blank_lines_and_escaped(self):
+    def test_map_is_shown_on_single_spaced_lines_and_escaped(self):
         self.service.announce("Bearer " + TOKEN, {"code":"ABC123", "requestId":"a"*32, "lobbyName":"Test Lobby", "gamemode":"SWAT", "map":"Arena **one** <@everyone>"})
         description = self.http.calls[-1][2]["embeds"][0]["description"]
-        self.assertEqual(description, f"Name: Test Lobby\n\nCode: `ABC123`\n\nHost: <@{HOST}>\n\nGamemode: SWAT\n\nMap: Arena \\*\\*one\\*\\* \\<@everyone\\>")
+        self.assertEqual(description, f"Name: Test Lobby\nCode: `ABC123`\nHost: <@{HOST}>\nGamemode: SWAT\nMap: Arena \\*\\*one\\*\\* \\<@everyone\\>")
 
     def test_map_update_and_close_keep_the_latest_map(self):
         self.send_mode()

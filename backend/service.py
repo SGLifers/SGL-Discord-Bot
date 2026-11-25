@@ -95,7 +95,7 @@ def lobby_message(host, code, lobby_name, closed=False, gamemode="", map_name=""
         lines.append(f"Gamemode: {plain(gamemode)}")
     if map_name:
         lines.append(f"Map: {plain(map_name)}")
-    embed = {"title": "Lobby closed" if closed else "Lobby open", "color": 0xED4245 if closed else 0x57F287, "description": "\n\n".join(lines)}
+    embed = {"title": "Lobby closed" if closed else "Lobby open", "color": 0xED4245 if closed else 0x57F287, "description": "\n".join(lines)}
     return {"content": "", "embeds": [embed], "allowed_mentions": {"parse": []}}
 
 
