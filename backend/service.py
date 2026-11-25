@@ -86,6 +86,23 @@ class Http:
             raise UpstreamError() from None
 
 
+def lobby_message(host, code, lobby_name, closed=False):
+    """One compact card; clearing content also converts legacy text announcements on close."""
+    name = re.sub(r"([\\`*_~|<>\[\]])", r"\\\1", lobby_name)
+    embed = {
+        "title": "Lobby closed" if closed else "Lobby open",
+        "color": 0xED4245 if closed else 0x57F287,
+        "fields": [
+            {"name": "Host", "value": f"<@{host}>", "inline": True},
+            {"name": "Lobby code", "value": f"`{code}`", "inline": True},
+        ],
+        "footer": {"text": "SplitGate Lifers"},
+    }
+    if name:
+        embed["description"] = name
+    return {"content": "", "embeds": [embed], "allowed_mentions": {"parse": []}}
+
+
 class Announcer:
     def __init__(self, config, repo, http, token_provider, now=lambda: int(time.time())):
         self.config, self.repo, self.http, self.token_provider, self.now = config, repo, http, token_provider, now
@@ -162,9 +179,8 @@ class Announcer:
         canonical = result["canonical"]
         nonce = hashlib.sha256((subject + ":" + canonical).encode()).hexdigest()[:24]
         # A pending retry keeps its original name, just as it keeps its nonce.
-        title = re.sub(r"([\\`*_~|<>\[\]])", r"\\\1", result["lobbyName"])
-        name_line = f"Lobby: {title}\n" if title else ""
-        message = {"content": f"Lobby opened by <@{host}>.\n{name_line}Lobby code: `{code}`", "allowed_mentions": {"parse": []}, "nonce": nonce, "enforce_nonce": True}
+        message = lobby_message(host, code, result["lobbyName"])
+        message.update(nonce=nonce, enforce_nonce=True)
         try:
             posted = self.http.json(f"https://discord.com/api/v10/channels/{self.config.channel}/messages", bot_auth, message)
             require(snowflake(posted.get("id")), 503, "Discord did not confirm delivery.")
@@ -222,9 +238,7 @@ class Announcer:
         if result.get("status") == "closed":
             return result
         canonical = result["canonical"]
-        title = re.sub(r"([\\`*_~|<>\[\]])", r"\\\1", result["lobbyName"])
-        name_line = f"Lobby: {title}\n" if title else ""
-        message = {"content": f"Lobby closed by <@{host}>.\n{name_line}Lobby code: `{code}`", "allowed_mentions": {"parse": []}}
+        message = lobby_message(host, code, result["lobbyName"], closed=True)
         try:
             edited = self.http.json(f"https://discord.com/api/v10/channels/{self.config.channel}/messages/{result['messageId']}", bot_auth, message, method="PATCH")
             require(edited.get("id") == result["messageId"], 503, "Discord did not confirm the lobby update.")

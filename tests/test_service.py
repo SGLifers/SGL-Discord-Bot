@@ -85,7 +85,13 @@ class Announcements(unittest.TestCase):
         url, auth, body = self.http.calls[-1]
         self.assertEqual(url, f"https://discord.com/api/v10/channels/{CHANNEL}/messages")
         self.assertEqual(auth, "Bot " + BOT)
-        self.assertEqual(body["content"], f"Lobby opened by <@{HOST}>.\nLobby code: `ABC123`")
+        self.assertEqual(body["content"], "")
+        self.assertEqual(len(body["embeds"]), 1)
+        embed = body["embeds"][0]
+        self.assertEqual(embed["title"], "Lobby open")
+        self.assertEqual(embed["color"], 0x57F287)
+        self.assertEqual(embed["fields"], [{"name": "Host", "value": f"<@{HOST}>", "inline": True}, {"name": "Lobby code", "value": "`ABC123`", "inline": True}])
+        self.assertNotIn("description", embed)
         self.assertEqual(body["allowed_mentions"], {"parse": []})
         self.assertTrue(body["enforce_nonce"])
         self.assertNotIn(TOKEN, json.dumps(self.repo.state))
@@ -122,7 +128,7 @@ class Announcements(unittest.TestCase):
     def test_lobby_name_is_included_as_escaped_plain_text(self):
         self.send(name=" Friday **games** <@everyone> ")
         message = self.http.calls[-1][2]
-        self.assertIn("Lobby: Friday \\*\\*games\\*\\* \\<@everyone\\>", message["content"])
+        self.assertEqual("Friday \\*\\*games\\*\\* \\<@everyone\\>", message["embeds"][0]["description"])
         self.assertEqual(message["allowed_mentions"], {"parse": []})
 
     def test_invalid_lobby_names(self):
@@ -142,7 +148,7 @@ class Announcements(unittest.TestCase):
         self.send(request="b" * 32, name="Changed name")
         posts = [c[2] for c in self.http.calls if c[0].endswith("/messages")]
         self.assertEqual(posts[0], posts[1])
-        self.assertIn("Original name", posts[1]["content"])
+        self.assertEqual("Original name", posts[1]["embeds"][0]["description"])
 
     def test_missing_expired_or_forged_identity(self):
         self.problem(401, lambda: self.service.announce("Bearer short", {}))
@@ -235,7 +241,14 @@ class Announcements(unittest.TestCase):
         self.assertEqual(len(self.http.messages), 1)
         url, body = self.http.edits[0]
         self.assertEqual(url, f"https://discord.com/api/v10/channels/{CHANNEL}/messages/{opened['messageId']}")
-        self.assertEqual(body["content"], f"Lobby closed by <@{HOST}>.\nLobby: Friday \\*\\*games\\*\\*\nLobby code: `ABC123`")
+        self.assertEqual(body["content"], "")
+        self.assertEqual(len(body["embeds"]), 1)
+        embed = body["embeds"][0]
+        self.assertEqual(embed["title"], "Lobby closed")
+        self.assertEqual(embed["color"], 0xED4245)
+        self.assertEqual(embed["description"], "Friday \\*\\*games\\*\\*")
+        self.assertEqual(embed["fields"][0]["value"], f"<@{HOST}>")
+        self.assertEqual(embed["fields"][1]["value"], "`ABC123`")
         self.assertEqual(body["allowed_mentions"], {"parse": []})
         self.assertEqual(self.close()["status"], "closed")
         self.assertEqual(len(self.http.edits), 1)
