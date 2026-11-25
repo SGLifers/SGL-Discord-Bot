@@ -264,6 +264,7 @@ class Announcer:
         return self.repo.edit(subject, complete)
 
     def update(self, subject, host, bot_auth, code, request_id, announcement_id, gamemode, now):
+        fingerprint = hashlib.sha256(gamemode.encode()).hexdigest()
         def claim(state):
             entries = {k: v for k, v in state.get("entries", {}).items() if v["created"] > now - 86400}
             entry = entries.get(announcement_id)
@@ -272,7 +273,7 @@ class Announcer:
             require(request_id not in entries and not any(request_id in v.get("closeRequestIds", []) or request_id in v.get("updates", {}) and k != announcement_id for k, v in entries.items()), 409, "Request identity was already used for another action.")
             updates = entry.setdefault("updates", {})
             previous = updates.get(request_id)
-            require(previous is None or previous["gamemode"] == gamemode, 409, "Request identity was used for another gamemode.")
+            require(previous is None or previous.get("gamemodeHash", hashlib.sha256(previous.get("gamemode", "").encode()).hexdigest()) == fingerprint, 409, "Request identity was used for another gamemode.")
             if previous and previous["status"] == "sent":
                 return {"status": "duplicate", "messageId": entry["messageId"], "announcementId": announcement_id, "lobbyStatus": "open"}
             require(previous is None or entry.get("latestUpdateId") == request_id, 409, "A newer update superseded this request.")
@@ -280,7 +281,7 @@ class Announcer:
                 raise Problem(429, "A lobby request is in progress.", min(120, state["lockUntil"] - now))
             if previous is None:
                 require(sum(len(v.get("updates", {})) for v in entries.values()) < 256, 429, "Daily gamemode update limit reached.")
-                updates[request_id] = {"gamemode": gamemode, "status": "pending"}
+                updates[request_id] = {"gamemodeHash": fingerprint, "status": "pending"}
             entry["latestUpdateId"] = request_id
             state.update(entries=entries, lockUntil=now + 45)
             return {"messageId": entry["messageId"], "lobbyName": entry.get("lobbyName", "")}
