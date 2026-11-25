@@ -4,7 +4,7 @@ param(
     [string]$Region='us-west-2',
     [Parameter(Mandatory)][ValidatePattern('^\d{17,20}$')][string]$GuildId,
     [Parameter(Mandatory)][ValidatePattern('^\d{17,20}$')][string]$ChannelId,
-    [ValidatePattern('^(\d{17,20})?$')][string]$HostRoleId='',
+    [ValidatePattern('^(\d{17,20}(,\d{17,20})*)?$')][string]$HostRoleId='',
     [ValidatePattern('^(\d{17,20}(,\d{17,20})*)?$')][string]$AllowedHostIds='',
     [Parameter(Mandatory)][string]$AlarmEmail,
     [string]$StackName='sgl-hosting',

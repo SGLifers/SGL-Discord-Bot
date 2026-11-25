@@ -5,7 +5,7 @@ Parameters:
   CodeKey: {Type: String}
   GuildId: {Type: String, AllowedPattern: '[0-9]{17,20}'}
   ChannelId: {Type: String, AllowedPattern: '[0-9]{17,20}'}
-  HostRoleId: {Type: String, Default: '', AllowedPattern: '([0-9]{17,20})?'}
+  HostRoleId: {Type: String, Default: '', AllowedPattern: '([0-9]{17,20}(,[0-9]{17,20})*)?', Description: 'Comma-separated host role IDs; any matching role permits announcements.'}
   AllowedHostIds: {Type: String, Default: '', AllowedPattern: '([0-9]{17,20}(,[0-9]{17,20})*)?'}
   SglIdentityUrl: {Type: String, Default: 'https://7l2zchnk7d.execute-api.us-west-2.amazonaws.com', AllowedPattern: 'https://[^\s?#@]+'}
   AnnouncementsEnabled: {Type: String, Default: 'false', AllowedValues: ['true', 'false']}

@@ -23,6 +23,11 @@ try {
     $deploy=@($global:hostingMockCalls | Where-Object {$_[0] -eq 'cloudformation' -and $_[1] -eq 'deploy'})
     if($deploy.Count -ne 1){throw 'Deployment command missing.'}
     if($deploy[0] -notcontains 'AllowedHostIds=323456789012345678,423456789012345678' -or $deploy[0] -notcontains 'HostRoleId=' -or $deploy[0] -notcontains 'AnnouncementsEnabled=false'){throw 'Parameter arguments did not preserve allowlists, empty roles or safe defaults.'}
+    $roleParameters=$withoutHosts.Clone();$roleParameters.HostRoleId='523456789012345678,623456789012345678,723456789012345678'
+    $global:hostingMockCalls.Clear()
+    & $script @roleParameters -EnableAnnouncements -PlanOnly
+    $prepared=Get-Content (Join-Path (Split-Path $PSScriptRoot -Parent) 'artifacts/parameters.json') -Raw | ConvertFrom-Json
+    if(($prepared | Where-Object ParameterKey -eq 'HostRoleId').ParameterValue -ne $roleParameters.HostRoleId){throw 'Multiple host role IDs were not retained.'}
     Write-Output 'Passed deployment-script checks with mocked AWS only.'
 }
 finally {Remove-Item Function:\aws}

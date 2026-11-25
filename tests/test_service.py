@@ -165,6 +165,23 @@ class Announcements(unittest.TestCase):
         self.http.member["roles"] = ["523456789012345678"]
         self.assertEqual(self.send()["status"], "sent")
 
+    def test_any_of_multiple_host_roles_is_authorized(self):
+        roles = ["523456789012345678", "623456789012345678", "723456789012345678"]
+        self.service.config = replace(CONFIG, allowed_hosts=frozenset(), host_role=",".join(roles))
+        self.http.member["roles"] = ["823456789012345678"]
+        self.problem(403, self.send)
+        for role in roles:
+            self.http.member["roles"] = [role]
+            self.assertIn(self.send()["status"], ["sent", "duplicate"])
+        self.http.member["roles"] = []
+        self.problem(403, self.send)
+
+    def test_invalid_host_role_list_fails_closed(self):
+        for value in ["bad", "523456789012345678,", ",523456789012345678", "523456789012345678, 623456789012345678"]:
+            self.service.config = replace(CONFIG, host_role=value)
+            self.problem(503, self.send)
+        self.assertFalse(self.http.calls)
+
     def test_membership_and_fixed_server(self):
         self.http.member["pending"] = True
         self.problem(403, self.send)

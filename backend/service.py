@@ -36,11 +36,15 @@ class Config:
     cooldown: int = 60
     daily_limit: int = 30
 
+    @property
+    def host_roles(self):
+        return frozenset(self.host_role.split(",")) if self.host_role else frozenset()
+
     def validate(self):
         uri = urllib.parse.urlsplit(self.identity_url)
         require(uri.scheme == "https" and bool(uri.hostname) and not uri.username and not uri.password and not uri.query and not uri.fragment and uri.port in (None, 443), 503, "Invalid identity service configuration.")
         require(snowflake(self.guild) and snowflake(self.channel), 503, "Configure the Discord server and channel.")
-        require(bool(self.allowed_hosts or self.host_role) and all(snowflake(x) for x in self.allowed_hosts) and (not self.host_role or snowflake(self.host_role)), 503, "Configure permitted hosts or a host role.")
+        require(bool(self.allowed_hosts or self.host_role) and all(snowflake(x) for x in self.allowed_hosts) and all(snowflake(x) for x in self.host_roles), 503, "Configure permitted hosts or a host role.")
         require(10 <= self.cooldown <= 3600 and 1 <= self.daily_limit <= 100, 503, "Invalid announcement limits.")
 
 
@@ -143,7 +147,7 @@ class Announcer:
         try:
             member = self.http.json(f"https://discord.com/api/v10/guilds/{self.config.guild}/members/{host}", bot_auth)
             require(member.get("user", {}).get("id") == host and not member.get("pending"), 403, "Join the Discord server before announcing.")
-            require(host in self.config.allowed_hosts or self.config.host_role and self.config.host_role in member.get("roles", []), 403, "This account is not a permitted host.")
+            require(host in self.config.allowed_hosts or bool(self.config.host_roles.intersection(member.get("roles", []))), 403, "This account is not a permitted host.")
             channel = self.http.json(f"https://discord.com/api/v10/channels/{self.config.channel}", bot_auth)
             require(channel.get("guild_id") == self.config.guild and channel.get("type") in (0, 5), 503, "Configure a text channel in the selected server.")
         except UpstreamError as error:
