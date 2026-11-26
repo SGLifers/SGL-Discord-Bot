@@ -57,6 +57,9 @@ def handler(event, context):
     try:
         method = event.get("requestContext", {}).get("http", {}).get("method", "")
         path = event.get("rawPath", "")
+        if path == "/stats/interactions" and method == "POST":
+            from stats_adapter import forward
+            return forward(event)
         if path == "/health" and method == "GET":
             return response(200, {"service": "SGL Hosting", "enabled": os.environ.get("ANNOUNCEMENTS_ENABLED", "false") == "true", "lobbyActions": ["open", "close", "update"]})
         if path != "/announcements" or method != "POST":

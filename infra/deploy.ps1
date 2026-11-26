@@ -8,6 +8,7 @@ param(
     [ValidatePattern('^(\d{17,20}(,\d{17,20})*)?$')][string]$AllowedHostIds='',
     [Parameter(Mandatory)][string]$AlarmEmail,
     [string]$StackName='sgl-hosting',
+    [string]$StatsApiFunctionArn='',
     [switch]$EnableAnnouncements,
     [switch]$PlanOnly
 )
@@ -25,7 +26,7 @@ $root=Split-Path $PSScriptRoot -Parent
 $artifact=Join-Path $root 'artifacts'
 New-Item -ItemType Directory -Force -Path $artifact | Out-Null
 $zip=Join-Path $artifact 'hosting.zip'
-Compress-Archive -Path (Join-Path $root 'backend/handler.py'),(Join-Path $root 'backend/service.py') -DestinationPath $zip -Force
+Compress-Archive -Path (Join-Path $root 'backend/handler.py'),(Join-Path $root 'backend/service.py'),(Join-Path $root 'backend/stats_adapter.py') -DestinationPath $zip -Force
 $hash=(Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
 $bucket="sgl-hosting-artifacts-$AccountId-$Region"
 $key="hosting/$hash.zip"
@@ -35,6 +36,8 @@ $parameters=@(
     @{ParameterKey='HostRoleId';ParameterValue=$HostRoleId}, @{ParameterKey='AllowedHostIds';ParameterValue=$AllowedHostIds},
     @{ParameterKey='AlarmEmail';ParameterValue=$AlarmEmail}, @{ParameterKey='AnnouncementsEnabled';ParameterValue=([bool]$EnableAnnouncements).ToString().ToLowerInvariant()}
 )
+# CloudFormation deploy preserves an existing parameter when no override is supplied.
+if($PSBoundParameters.ContainsKey('StatsApiFunctionArn')){$parameters+=@{ParameterKey='StatsApiFunctionArn';ParameterValue=$StatsApiFunctionArn}}
 $parameterFile=Join-Path $artifact 'parameters.json'
 $parameters | ConvertTo-Json | Set-Content -LiteralPath $parameterFile -Encoding utf8
 if($PlanOnly){Write-Output "Prepared package and parameters for $AccountId in $Region. No AWS changes were made.";return}

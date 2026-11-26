@@ -23,6 +23,11 @@ try {
     $deploy=@($global:hostingMockCalls | Where-Object {$_[0] -eq 'cloudformation' -and $_[1] -eq 'deploy'})
     if($deploy.Count -ne 1){throw 'Deployment command missing.'}
     if($deploy[0] -notcontains 'AllowedHostIds=323456789012345678,423456789012345678' -or $deploy[0] -notcontains 'HostRoleId=' -or $deploy[0] -notcontains 'AnnouncementsEnabled=false'){throw 'Parameter arguments did not preserve allowlists, empty roles or safe defaults.'}
+    if(@($deploy[0] | Where-Object {$_ -like 'StatsApiFunctionArn=*'}).Count -ne 0){throw 'An omitted stats setting would erase the existing integration.'}
+    $statsParameters=$parameters.Clone();$statsParameters.StatsApiFunctionArn='arn:aws:lambda:us-west-2:633398616560:function:splitstats-api'
+    & $script @statsParameters -PlanOnly
+    $statsPrepared=Get-Content (Join-Path (Split-Path $PSScriptRoot -Parent) 'artifacts/parameters.json') -Raw | ConvertFrom-Json
+    if(($statsPrepared | Where-Object ParameterKey -eq 'StatsApiFunctionArn').ParameterValue -ne $statsParameters.StatsApiFunctionArn){throw 'Explicit stats integration was not retained.'}
     $roleParameters=$withoutHosts.Clone();$roleParameters.HostRoleId='523456789012345678,623456789012345678,723456789012345678'
     $global:hostingMockCalls.Clear()
     & $script @roleParameters -EnableAnnouncements -PlanOnly

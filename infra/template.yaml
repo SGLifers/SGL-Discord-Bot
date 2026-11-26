@@ -3,6 +3,7 @@ Description: SGL lobby announcements. On-demand Discord REST bot; no always-on s
 Parameters:
   CodeBucket: {Type: String}
   CodeKey: {Type: String}
+  StatsApiFunctionArn: {Type: String, Default: '', Description: 'Optional SplitStatsInfra API function ARN for signed Discord commands.'}
   GuildId: {Type: String, AllowedPattern: '[0-9]{17,20}'}
   ChannelId: {Type: String, AllowedPattern: '[0-9]{17,20}'}
   HostRoleId: {Type: String, Default: '', AllowedPattern: '([0-9]{17,20}(,[0-9]{17,20})*)?', Description: 'Comma-separated host role IDs; any matching role permits announcements.'}
@@ -10,6 +11,8 @@ Parameters:
   SglIdentityUrl: {Type: String, Default: 'https://7l2zchnk7d.execute-api.us-west-2.amazonaws.com', AllowedPattern: 'https://[^\s?#@]+'}
   AnnouncementsEnabled: {Type: String, Default: 'false', AllowedValues: ['true', 'false']}
   AlarmEmail: {Type: String, AllowedPattern: '[^\s@]+@[^\s@]+\.[^\s@]+'}
+Conditions:
+  HasStats: !Not [!Equals [!Ref StatsApiFunctionArn, '']]
 Resources:
   State:
     Type: AWS::DynamoDB::Table
@@ -48,6 +51,10 @@ Resources:
             Statement:
               - {Effect: Allow, Action: ['dynamodb:GetItem', 'dynamodb:PutItem'], Resource: !GetAtt State.Arn}
               - {Effect: Allow, Action: 'secretsmanager:GetSecretValue', Resource: !Ref BotSecret}
+              - !If
+                - HasStats
+                - {Effect: Allow, Action: 'lambda:InvokeFunction', Resource: !Ref StatsApiFunctionArn}
+                - !Ref AWS::NoValue
               - {Effect: Allow, Action: ['logs:CreateLogStream', 'logs:PutLogEvents'], Resource: !GetAtt FunctionLogs.Arn}
   Function:
     Type: AWS::Lambda::Function
@@ -62,6 +69,7 @@ Resources:
       Code: {S3Bucket: !Ref CodeBucket, S3Key: !Ref CodeKey}
       Environment:
         Variables:
+          STATS_API_FUNCTION_ARN: !Ref StatsApiFunctionArn
           STATE_TABLE: !Ref State
           BOT_SECRET_ARN: !Ref BotSecret
           SGL_IDENTITY_URL: !Ref SglIdentityUrl
@@ -81,6 +89,12 @@ Resources:
       IntegrationUri: !GetAtt Function.Arn
       PayloadFormatVersion: '2.0'
       TimeoutInMillis: 30000
+  StatsRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref Api
+      RouteKey: POST /stats/interactions
+      Target: !Join ['/', [integrations, !Ref Integration]]
   HealthRoute:
     Type: AWS::ApiGatewayV2::Route
     Properties: {ApiId: !Ref Api, RouteKey: 'GET /health', Target: !Sub 'integrations/${Integration}'}
